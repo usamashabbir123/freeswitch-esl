@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  fs-logger:
+    build: .
+    container_name: fs-logger
+    env_file: .env
+    volumes:
+      - ./freeswitch_logs:/var/logs/freeswitch
+    restart: unless-stopped
