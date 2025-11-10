@@ -1,23 +1,36 @@
-FROM python:3.11-slim
+# -----------------------------
+# Stage 1: Build the ESL Python wheel
+# -----------------------------
+FROM python:3.9-slim AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /app
-
-# Install minimal dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3-dev \
-        python3-setuptools \
-        python3-pip \
-        netcat-openbsd \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-dev \
+    swig \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy your local ESL Python module
+COPY ./freeswitch-esl-python /opt/freeswitch-esl-python
 
-COPY domain_logger.py ./
+# Build the wheel
+WORKDIR /opt/freeswitch-esl-python
+RUN python3 setup.py bdist_wheel
 
-ENV LOG_DIR=/var/logs/freeswitch
-EXPOSE 8021
+# -----------------------------
+# Stage 2: Final runtime image
+# -----------------------------
+FROM python:3.9-slim
 
-CMD ["python3", "domain_logger.py"]
+# Copy the built wheel from builder
+COPY --from=builder /opt/freeswitch-esl-python/dist/*.whl /tmp/
+
+# Install the ESL wheel
+RUN pip install /tmp/*.whl && rm -rf /tmp/*.whl
+
+# Copy your logger service code
+WORKDIR /app
+COPY . /app
+
+# Run your FreeSWITCH logger service
+CMD ["python3", "logger.py"]

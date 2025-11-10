@@ -1,10 +1,85 @@
-version: "3.9"
+version: '3.8'
 
 services:
-  fs-logger:
-    build: .
-    container_name: fs-logger
-    env_file: .env
-    volumes:
-      - ./freeswitch_logs:/var/logs/freeswitch
+  freeswitch-logger:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: freeswitch-logger
     restart: unless-stopped
+    
+    env_file:
+      - .env
+    
+    environment:
+      - ESL_HOST=${ESL_HOST}
+      - ESL_PORT=${ESL_PORT}
+      - ESL_PASSWORD=${ESL_PASSWORD}
+      - LOG_DIR=${LOG_DIR}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - RECONNECT_DELAY=${RECONNECT_DELAY}
+      - FILE_ROTATION_SIZE=${FILE_ROTATION_SIZE}
+      - BUFFER_FLUSH_INTERVAL=${BUFFER_FLUSH_INTERVAL}
+    
+    volumes:
+      - ${HOST_LOG_PATH:-./logs}:/var/log/freeswitch-logs
+      - ./logger.py:/app/logger.py:ro
+    
+    networks:
+      - freeswitch-network
+    
+    depends_on:
+      - freeswitch
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/var/log/freeswitch-logs') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # FreeSWITCH service (optional - if you want to run FS in same compose)
+  freeswitch:
+    image: signalwire/freeswitch:latest
+    container_name: freeswitch
+    restart: unless-stopped
+    
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5080:5080/udp"
+      - "5080:5080/tcp"
+      - "8021:8021/tcp"  # ESL port
+      - "16384-16394:16384-16394/udp"  # RTP ports
+    
+    volumes:
+      - freeswitch-config:/etc/freeswitch
+      - freeswitch-recordings:/var/lib/freeswitch/recordings
+    
+    networks:
+      - freeswitch-network
+    
+    environment:
+      - FREESWITCH_ESL_PASSWORD=${ESL_PASSWORD}
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  freeswitch-network:
+    driver: bridge
+
+volumes:
+  freeswitch-config:
+    driver: local
+  freeswitch-recordings:
+    driver: local
