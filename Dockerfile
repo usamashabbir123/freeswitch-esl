@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy your local ESL Python module
-COPY ./freeswitch-esl-python /opt/freeswitch-esl-python
+COPY ./esl-python /opt/freeswitch-esl-python
 
 # Build the wheel
 WORKDIR /opt/freeswitch-esl-python
