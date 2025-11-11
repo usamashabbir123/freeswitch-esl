@@ -127,44 +127,126 @@ class LogManager:
         self.running = True
         self.metrics = metrics
         
-    def extract_domain(self, log_line):
+    def extract_domain(self, event, log_line):
         """
-        Extract domain name from log line
-        Supports multiple FreeSWITCH log formats
+        Extract domain name from event headers - much more reliable than log parsing
+        Uses domain_name variable (like Lua: session:getVariable("domain_name"))
+        Falls back to other headers if domain_name is not available
         """
-        if not isinstance(log_line, str):
-            return 'default'
+        if not event:
+            return 'unknown'
         
-        # Common FreeSWITCH domain patterns
-        patterns = [
-            # Sofia SIP domain (e.g., "sofia/internal/user@domain.com")
-            r'sofia/[\w-]+/(?:\w+@)?([\w.-]+)',
-            # Generic domain in brackets [domain.com]
-            r'\[([\w.-]+\.\w+)\]',
-            # Domain= or domain: formats
-            r'domain[=:]\s*([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*)',
-            # Email-like domain (@domain.com)
-            r'@([\w.-]+\.\w+)',
-            # From/To headers (sip:user@domain.com)
-            r'sip:[\w.+-]*@([\w.-]+)',
-            # X-header domain
-            r'domain\s+([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)*)',
-        ]
-        
-        for pattern in patterns:
-            try:
-                match = re.search(pattern, log_line, re.IGNORECASE)
-                if match:
-                    domain = match.group(1) if match.lastindex >= 1 else None
-                    if domain:
-                        # Validate domain format
-                        if self._is_valid_domain(domain):
-                            return domain.lower()
-            except Exception as e:
-                logger.debug(f"Error in regex pattern: {e}")
-                continue
-        
-        return 'default'
+        try:
+            # Priority 0: Try domain_name variable (like Lua session:getVariable("domain_name"))
+            # This is the most direct way to get the domain
+            domain = event.getHeader('domain_name')
+            if domain and domain != 'default' and domain.strip():
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from domain_name variable: {domain}")
+                    return domain.lower()
+            
+            # Priority 1: Try Caller-Domain header (most reliable)
+            domain = event.getHeader('Caller-Domain')
+            if domain and domain != 'default' and domain.strip():
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Caller-Domain: {domain}")
+                    return domain.lower()
+            
+            # Priority 2: Try Callee-Domain
+            domain = event.getHeader('Callee-Domain')
+            if domain and domain != 'default' and domain.strip():
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Callee-Domain: {domain}")
+                    return domain.lower()
+            
+            # Priority 3: Try User-Domain variable (FreeSWITCH session variable)
+            domain = event.getHeader('User-Domain')
+            if domain and domain != 'default' and domain.strip():
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from User-Domain: {domain}")
+                    return domain.lower()
+            
+            # Priority 4: Try Domain variable (alternative FreeSWITCH variable)
+            domain = event.getHeader('Domain')
+            if domain and domain != 'default' and domain.strip():
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Domain variable: {domain}")
+                    return domain.lower()
+            
+            # Priority 5: Extract from Caller-ID-Number (user@domain)
+            caller_id = event.getHeader('Caller-ID-Number')
+            if caller_id and '@' in caller_id:
+                domain = caller_id.split('@')[1].strip()
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Caller-ID-Number: {domain}")
+                    return domain.lower()
+            
+            # Priority 6: From header
+            from_hdr = event.getHeader('From')
+            if from_hdr:
+                domain = self._extract_sip_domain(from_hdr)
+                if domain and self._is_valid_domain(domain):
+                    logger.debug(f"Domain from From header: {domain}")
+                    return domain.lower()
+            
+            # Priority 7: To header
+            to_hdr = event.getHeader('To')
+            if to_hdr:
+                domain = self._extract_sip_domain(to_hdr)
+                if domain and self._is_valid_domain(domain):
+                    logger.debug(f"Domain from To header: {domain}")
+                    return domain.lower()
+            
+            # Priority 8: Channel-Name header
+            channel = event.getHeader('Channel-Name')
+            if channel and '@' in channel:
+                domain = channel.split('@')[1].strip()
+                if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Channel-Name: {domain}")
+                    return domain.lower()
+            
+            # Priority 9: Try Channel-IP
+            ip = event.getHeader('Channel-IP')
+            if ip and self._is_valid_domain(ip):
+                logger.debug(f"Domain from Channel-IP: {ip}")
+                return ip
+            
+            # Fallback: Try parsing log line
+            if log_line and isinstance(log_line, str):
+                patterns = [
+                    r'sofia/[\w-]+/(?:\w+@)?([\w.-]+)',
+                    r'@([\w.-]+)',
+                    r'\[([\w.-]+\.\w+)\]',
+                ]
+                for pattern in patterns:
+                    try:
+                        match = re.search(pattern, log_line, re.IGNORECASE)
+                        if match and match.lastindex >= 1:
+                            domain = match.group(1)
+                            if domain and self._is_valid_domain(domain):
+                                logger.debug(f"Domain from log regex: {domain}")
+                                return domain.lower()
+                    except Exception:
+                        continue
+            
+            # Last resort: use 'unknown' instead of 'default'
+            logger.debug("No domain found in headers or log, using 'unknown'")
+            return 'unknown'
+            
+        except Exception as e:
+            logger.error(f"Error extracting domain: {e}")
+            return 'unknown'
+    
+    @staticmethod
+    def _extract_sip_domain(sip_string):
+        """Extract domain from SIP URI (sip:user@domain)"""
+        try:
+            match = re.search(r'sip:[\w.+-]*@([\w.-]+)', str(sip_string))
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
+        return None
     
     @staticmethod
     def _is_valid_domain(domain):
@@ -191,14 +273,13 @@ class LogManager:
         return True
     
     def write_log(self, domain, log_line):
-        """Write log line to appropriate domain file with buffering"""
+        """Write log line to appropriate domain file - REAL-TIME (immediate write)"""
         try:
             with self.lock:
                 timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 formatted_line = f"[{timestamp}] {log_line}\n"
-                self.buffers[domain].append(formatted_line)
-                self.metrics.record_write(len(formatted_line))
-                logger.debug(f"Buffered log for domain '{domain}': {len(formatted_line)} bytes (buffer size: {len(self.buffers[domain])})")
+                # Write IMMEDIATELY to file instead of buffering
+                self._write_to_file(domain, formatted_line)
         except Exception as e:
             logger.error(f"Error writing log: {e}")
             self.metrics.record_error()
@@ -409,9 +490,8 @@ class FreeSwitchLogCollector:
                 log_data = f"[{event_name}] [{priority}] {body}"
             
             if log_data:
-                # Extract domain and write log
-                domain = self.log_manager.extract_domain(log_data)
-                logger.debug(f"Event '{event_name}' -> domain '{domain}'")
+                # Extract domain from event headers + log line and write immediately
+                domain = self.log_manager.extract_domain(event, log_data)
                 self.log_manager.write_log(domain, log_data)
                 
         except Exception as e:
