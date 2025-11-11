@@ -506,14 +506,11 @@ class FreeSwitchLogCollector:
                 # Prefer raw LOG format with severity and file:line when available
                 log_level = None
                 try:
-                    log_level = event.getHeader('Log-Level') or event.getHeader('Log-Level')
+                    log_level = event.getHeader('Log-Level') or event.getHeader('Severity')
                 except Exception:
                     log_level = None
                 if not log_level:
-                    try:
-                        log_level = event.getHeader('Severity')
-                    except Exception:
-                        log_level = 'INFO'
+                    log_level = 'INFO'
 
                 file_info = ''
                 try:
@@ -533,9 +530,36 @@ class FreeSwitchLogCollector:
                 except Exception:
                     logger.debug(formatted)
             elif event_name and event_name.upper() != 'HEARTBEAT':
-                priority = event.getHeader('Log-Level') or 'INFO'
-                body = event.getBody() or ''
-                log_data = f"[{event_name}] [{priority}] {body}"
+                # Build a rich log line containing headers and body so files contain full call info
+                priority = event.getHeader('Log-Level') or event.getHeader('Severity') or 'INFO'
+                try:
+                    body = event.getBody() or ''
+                except Exception:
+                    body = ''
+
+                headers_of_interest = [
+                    'Unique-ID', 'Channel-Name', 'Caller-ID-Number', 'Caller-ID-Name',
+                    'Destination-Number', 'Caller-Domain', 'Callee-Domain', 'Channel-State',
+                    'Call-Direction', 'Application', 'Application-Data'
+                ]
+                header_parts = []
+                for h in headers_of_interest:
+                    try:
+                        val = event.getHeader(h)
+                    except Exception:
+                        val = None
+                    if val:
+                        header_parts.append(f"{h}={val}")
+
+                header_str = ' '.join(header_parts)
+                # include any body payload after headers
+                combined = f"{header_str} {body}".strip()
+                log_data = f"[{event_name}] [{priority}] {combined}".strip()
+                # Also log the rich line to stdout for visibility
+                try:
+                    logger.info(log_data)
+                except Exception:
+                    logger.debug(log_data)
 
             if log_data:
                 domain = self.log_manager.extract_domain(event, log_data)
