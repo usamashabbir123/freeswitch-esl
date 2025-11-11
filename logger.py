@@ -198,6 +198,7 @@ class LogManager:
                 formatted_line = f"[{timestamp}] {log_line}\n"
                 self.buffers[domain].append(formatted_line)
                 self.metrics.record_write(len(formatted_line))
+                logger.debug(f"Buffered log for domain '{domain}': {len(formatted_line)} bytes (buffer size: {len(self.buffers[domain])})")
         except Exception as e:
             logger.error(f"Error writing log: {e}")
             self.metrics.record_error()
@@ -206,12 +207,17 @@ class LogManager:
         """Flush all buffered logs to disk"""
         try:
             with self.lock:
+                flushed_count = 0
                 for domain in list(self.buffers.keys()):
                     if self.buffers[domain]:
                         content = ''.join(self.buffers[domain])
+                        buffer_size = len(self.buffers[domain])
                         self._write_to_file(domain, content)
+                        flushed_count += buffer_size
                         self.buffers[domain].clear()
                 
+                if flushed_count > 0:
+                    logger.debug(f"Flushed {flushed_count} log entries to disk")
                 self.metrics.record_domain(len(self.file_handles))
         except Exception as e:
             logger.error(f"Error flushing buffers: {e}")
@@ -234,12 +240,14 @@ class LogManager:
             
             # Open file in append mode if not already open
             if domain not in self.file_handles or self.file_handles[domain].closed:
+                logger.debug(f"Opening log file: {log_file}")
                 self.file_handles[domain] = open(log_file, 'a', buffering=8192)
             
             # Write and flush
             self.file_handles[domain].write(content)
             self.file_handles[domain].flush()
             self.file_sizes[domain] += len(content)
+            logger.debug(f"Wrote {len(content)} bytes to {domain}.log (total: {self.file_sizes[domain]} bytes)")
             
         except Exception as e:
             logger.error(f"Error writing to {log_file}: {e}")
@@ -403,6 +411,7 @@ class FreeSwitchLogCollector:
             if log_data:
                 # Extract domain and write log
                 domain = self.log_manager.extract_domain(log_data)
+                logger.debug(f"Event '{event_name}' -> domain '{domain}'")
                 self.log_manager.write_log(domain, log_data)
                 
         except Exception as e:
