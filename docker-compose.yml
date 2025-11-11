@@ -23,7 +23,7 @@ services:
 
     volumes:
       # store logs persistently on host
-      - ${HOST_LOG_PATH:-./logs}:/var/log/freeswitch
+      - ${HOST_LOG_PATH}:/var/log/freeswitch
 
     network_mode: host
 
