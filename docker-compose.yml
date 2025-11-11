@@ -24,17 +24,8 @@ services:
     volumes:
       # store logs persistently on host
       - ${HOST_LOG_PATH:-./logs}:/var/log/freeswitch-logs
-      # your Python logger script
-      - ./logger.py:/app/logger.py:ro
 
-    networks:
-      - freeswitch-network
-
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    network_mode: host
 
     healthcheck:
       test: ["CMD", "python3", "-c", "import os; exit(0 if os.path.exists('/var/log/freeswitch-logs') else 1)"]
@@ -42,7 +33,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-networks:
-  freeswitch-network:
-    driver: bridge
