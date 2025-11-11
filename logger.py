@@ -18,7 +18,7 @@ import signal
 import logging
 from datetime import datetime
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 from threading import Lock, Thread
 import re
 import json
@@ -107,7 +107,18 @@ class LogManager:
     
     def __init__(self, log_dir, rotation_size, metrics):
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to a writable directory when container user lacks permissions.
+            fallback = Path('/tmp/freeswitch-logs')
+            try:
+                fallback.mkdir(parents=True, exist_ok=True)
+                logger.warning(f"Permission denied creating {self.log_dir}; falling back to {fallback}")
+                self.log_dir = fallback
+            except Exception as e:
+                logger.error(f"Failed to create fallback log directory {fallback}: {e}")
+                raise
         self.rotation_size = rotation_size
         self.file_handles = {}
         self.file_sizes = defaultdict(int)
@@ -300,6 +311,8 @@ class FreeSwitchLogCollector:
         self.last_flush = time.time()
         self.connection_attempts = 0
         self.max_connection_attempts = 5
+        # Recent event IDs to avoid processing duplicates when multiple subscriptions/formats are used
+        self.recent_event_ids = deque(maxlen=10000)
         
     def connect(self):
         """Establish ESL connection to FreeSWITCH"""
@@ -359,6 +372,17 @@ class FreeSwitchLogCollector:
     def process_event(self, event):
         """Process incoming ESL event"""
         try:
+            # Attempt to deduplicate events if an identifier header is present
+            event_id = None
+            try:
+                event_id = event.getHeader('Event-Name') + '|' + (event.getHeader('Unique-ID') or event.getHeader('Event-UUID') or '')
+            except Exception:
+                event_id = None
+            if event_id:
+                if event_id in self.recent_event_ids:
+                    logger.debug(f"Duplicate event ignored: {event_id}")
+                    return
+                self.recent_event_ids.append(event_id)
             self.metrics.record_event()
             
             event_name = event.getHeader("Event-Name")

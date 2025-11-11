@@ -40,9 +40,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     zlib1g \
     && rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/log/freeswitch-logs && \
+    mkdir -p /var/log/freeswitch-logs /var/log/freeswitch && \
     useradd -m -u 1000 logger && \
-    chown -R logger:logger /var/log/freeswitch-logs
+    chown -R logger:logger /var/log/freeswitch-logs /var/log/freeswitch
 
 # Copy Python site-packages from builder (includes ESL and all compiled extensions)
 
@@ -52,7 +52,6 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 WORKDIR /app
 COPY --chown=logger:logger logger.py .
 COPY --chown=logger:logger healthcheck.py .
-COPY --chown=logger:logger debug_connection.py .
 COPY --chown=logger:logger requirements.txt .
 
 # Install Python dependencies

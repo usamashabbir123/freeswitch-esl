@@ -3,80 +3,8 @@ FROM python:3.12-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
+# Debug Dockerfile intentionally disabled for production repo.
+# If you need the debug Dockerfile, restore it from version control or
+# create a temporary Dockerfile for local debugging. This file is kept
+# in the repo as a placeholder and is not meant for building production images.
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    ca-certificates \
-    g++ \
-    gcc \
-    git \
-    libpcre2-dev \
-    python3-dev \
-    python3-pip \
-    python3-setuptools \
-    swig \
-    zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Upgrade pip, setuptools, wheel
-RUN python3 -m pip install --upgrade pip setuptools wheel
-
-# Copy local ESL source
-WORKDIR /build
-COPY esl-python/ .
-
-# Build and install python-ESL from source
-RUN python3 setup.py build_ext --inplace && \
-    python3 setup.py install && \
-    echo "=== BUILDER: Listing site-packages ===" && \
-    ls -la /usr/local/lib/python3.12/site-packages/ | grep -i esl && \
-    echo "=== BUILDER: Looking for _ESL ===" && \
-    find /usr/local/lib/python3.12/site-packages -type f \( -name "*_ESL*" -o -name "ESL.py" \) && \
-    echo "=== BUILDER: Python can import ===" && \
-    python3 -c "import ESL; print('✓ ESL imports successfully'); print('ESL location:', ESL.__file__)" && \
-    echo "=== BUILDER: Build complete ==="
-
-# Final runtime image
-FROM python:3.12-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    zlib1g \
-    && rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/log/freeswitch-logs && \
-    useradd -m -u 1000 logger && \
-    chown -R logger:logger /var/log/freeswitch-logs
-
-# Copy Python site-packages from builder (includes ESL and all compiled extensions)
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-
-# Debug: List what was copied
-RUN echo "=== RUNTIME: Listing site-packages ===" && \
-    ls -la /usr/local/lib/python3.12/site-packages/ | grep -i esl && \
-    echo "=== RUNTIME: Looking for _ESL ===" && \
-    find /usr/local/lib/python3.12/site-packages -type f \( -name "*_ESL*" -o -name "ESL.py" \) && \
-    echo "=== RUNTIME: Checking import ===" && \
-    python3 -c "import sys; print('Python path:', sys.path); import ESL; print('✓ ESL imports successfully'); print('ESL location:', ESL.__file__)" || \
-    (echo "FAILED TO IMPORT ESL" && python3 -c "import sys; print('Python path:', sys.path); import ESL" || true)
-
-# Copy the application
-WORKDIR /app
-COPY --chown=logger:logger logger.py .
-COPY --chown=logger:logger healthcheck.py .
-COPY --chown=logger:logger requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt && \
-    chown -R logger:logger /app
-
-USER logger
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 /app/healthcheck.py
-
-CMD ["python3", "/app/logger.py"]
