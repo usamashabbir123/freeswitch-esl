@@ -146,49 +146,91 @@ class LogManager:
         self.metrics = metrics
 
     def extract_domain(self, event, log_line):
+        """
+        Improved domain extraction: prefer session/ESL headers (including variable_ prefixes),
+        then common SIP headers, then regex against the raw log line. Returns 'unknown' when
+        nothing reliable is found.
+        """
         if not event:
             return 'unknown'
-        try:
-            for header in ('domain_name', 'Caller-Domain', 'Callee-Domain', 'User-Domain', 'Domain'):
-                try:
-                    v = event.getHeader(header)
-                except Exception:
-                    v = None
-                if v and v.strip() and v.lower() != 'default':
-                    if self._is_valid_domain(v):
-                        return v.lower()
 
-            # Try parsing common SIP headers
+        try:
+            # Common header keys to try (include variable_ prefixed session variables)
+            header_candidates = [
+                'domain_name', 'Caller-Domain', 'Callee-Domain', 'User-Domain', 'Domain',
+                'variable_domain_name', 'variable_domain', 'variable_user_domain',
+                'variable_sip_from', 'variable_sip_to', 'variable_domain'
+            ]
+
+            for header in header_candidates:
+                try:
+                    val = event.getHeader(header)
+                except Exception:
+                    val = None
+                if not val or not isinstance(val, str):
+                    continue
+                v = val.strip()
+                if not v or v.lower() == 'default':
+                    continue
+
+                # If value looks like a SIP URI, extract domain
+                if 'sip:' in v or '@' in v:
+                    sip_domain = self._extract_sip_domain(v) or (v.split('@', 1)[1].strip() if '@' in v else None)
+                    if sip_domain and self._is_valid_domain(sip_domain):
+                        logger.debug(f"Domain from header {header}: {sip_domain}")
+                        return sip_domain.lower()
+
+                # Plain domain value
+                if self._is_valid_domain(v):
+                    logger.debug(f"Domain from header {header}: {v}")
+                    return v.lower()
+
+            # Try Caller-ID-Number (user@domain)
             try:
                 caller_id = event.getHeader('Caller-ID-Number')
             except Exception:
                 caller_id = None
-            if caller_id and '@' in caller_id:
+            if caller_id and isinstance(caller_id, str) and '@' in caller_id:
                 domain = caller_id.split('@', 1)[1].strip()
                 if self._is_valid_domain(domain):
+                    logger.debug(f"Domain from Caller-ID-Number: {domain}")
                     return domain.lower()
 
+            # Try From/To/Channel-Name headers
             for hdr in ('From', 'To', 'Channel-Name'):
                 try:
                     h = event.getHeader(hdr)
                 except Exception:
                     h = None
-                if h:
-                    dm = self._extract_sip_domain(h)
-                    if dm and self._is_valid_domain(dm):
-                        return dm.lower()
+                if not h:
+                    continue
+                dm = self._extract_sip_domain(h) or (str(h).split('@', 1)[1].strip() if '@' in str(h) else None)
+                if dm and self._is_valid_domain(dm):
+                    logger.debug(f"Domain from {hdr}: {dm}")
+                    return dm.lower()
 
-            # Fallback: regex against log_line
+            # Final fallback: regexes against raw log line to catch fs_cli outputs
             if log_line and isinstance(log_line, str):
-                patterns = [r'sofia/[\w-]+/(?:[\w%+\-]+@)?([\w.-]+)', r'@([\w.-]+)', r'\[([\w.-]+\.[a-zA-Z]{2,})\]']
+                patterns = [
+                    r'sip:[^@>]+@([\w.-]+)',
+                    r'sofia/[\w-]+/(?:[\w%+\-]+@)?([\w.-]+)',
+                    r'@([\w.-]+)',
+                    r'\[([\w.-]+\.[a-zA-Z]{2,})\]'
+                ]
                 for p in patterns:
-                    m = re.search(p, log_line)
-                    if m:
-                        d = m.group(1)
-                        if self._is_valid_domain(d):
-                            return d.lower()
+                    try:
+                        m = re.search(p, log_line)
+                        if m:
+                            d = m.group(1)
+                            if d and self._is_valid_domain(d):
+                                logger.debug(f"Domain from log regex ({p}): {d}")
+                                return d.lower()
+                    except Exception:
+                        continue
 
+            logger.debug("No domain found in headers or log; using 'unknown'")
             return 'unknown'
+
         except Exception as e:
             logger.exception(f"Error extracting domain: {e}")
             return 'unknown'
