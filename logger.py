@@ -412,14 +412,18 @@ class FreeSwitchLogCollector:
 
             if connected:
                 logger.info("Connected to FreeSWITCH")
-                    # Use raw log subscription to capture fs_cli-style output (file:line, severity)
+    
+                # Use raw log subscription to capture fs_cli-style output (file:line, severity)
+                try:
+                    self.connection.events("log", "all")
+                    logger.info("✓ Subscribed to all RAW log events (log/all)")
+                except Exception:
+                    # Fallback to plain events if 'log' isn't supported
                     try:
-                        self.connection.events("log", "all")
-                        logger.info("✓ Subscribed to all RAW log events (log/all)")
-                    except Exception:
-                        # Fallback to plain events if 'log' isn't supported
                         self.connection.events("plain", "all")
                         logger.info("✓ Subscribed to parsed events (plain/all) - raw logs unavailable")
+                    except Exception:
+                        logger.warning("Failed to subscribe to events via ESL API")
                 self.connection_attempts = 0
                 return True
             else:
