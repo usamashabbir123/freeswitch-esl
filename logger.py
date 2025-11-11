@@ -24,7 +24,7 @@ import sys
 import time
 import signal
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict, deque
 from threading import Lock, Thread
@@ -227,7 +227,8 @@ class LogManager:
         """Write log line to appropriate domain file - immediate write"""
         try:
             with self.lock:
-                timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                # use timezone-aware UTC timestamps (avoid deprecated utcnow())
+                timestamp = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 # ensure single newline at end
                 line = log_line.rstrip('\n')
                 formatted_line = f"[{timestamp}] {line}\n"
@@ -321,7 +322,8 @@ class LogManager:
                     pass
                 del self.file_handles[domain]
 
-            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            # rotation timestamp - timezone-aware
+            timestamp = datetime.now(timezone.utc).astimezone().strftime('%Y%m%d_%H%M%S')
             rotated_file = self.log_dir / f"{domain}_{timestamp}.log"
             try:
                 log_file.rename(rotated_file)
@@ -410,13 +412,14 @@ class FreeSwitchLogCollector:
 
             if connected:
                 logger.info("Connected to FreeSWITCH")
-                try:
-                    self.connection.events('plain', 'all')
-                except Exception:
+                    # Use raw log subscription to capture fs_cli-style output (file:line, severity)
                     try:
-                        self.connection.events('log', 'all')
+                        self.connection.events("log", "all")
+                        logger.info("✓ Subscribed to all RAW log events (log/all)")
                     except Exception:
-                        logger.debug('Could not subscribe to events via provided API')
+                        # Fallback to plain events if 'log' isn't supported
+                        self.connection.events("plain", "all")
+                        logger.info("✓ Subscribed to parsed events (plain/all) - raw logs unavailable")
                 self.connection_attempts = 0
                 return True
             else:
@@ -450,9 +453,39 @@ class FreeSwitchLogCollector:
             log_data = None
             if event_name.upper() in ('LOG', 'CHANNEL_LOG'):
                 try:
-                    log_data = event.getBody() or ''
+                    body = event.getBody() or ''
                 except Exception:
-                    log_data = ''
+                    body = ''
+
+                # Prefer raw LOG format with severity and file:line when available
+                log_level = None
+                try:
+                    log_level = event.getHeader('Log-Level') or event.getHeader('Log-Level')
+                except Exception:
+                    log_level = None
+                if not log_level:
+                    try:
+                        log_level = event.getHeader('Severity')
+                    except Exception:
+                        log_level = 'INFO'
+
+                file_info = ''
+                try:
+                    f = event.getHeader('File') or ''
+                    l = event.getHeader('Line') or ''
+                    if f or l:
+                        file_info = f"[{f}:{l}] " if f and l else f"[{f or l}] "
+                except Exception:
+                    file_info = ''
+
+                formatted = f"[{log_level}] {file_info}{body}".strip()
+                log_data = formatted
+
+                # Also emit raw log to stdout so container logs mirror fs_cli
+                try:
+                    logger.info(formatted)
+                except Exception:
+                    logger.debug(formatted)
             elif event_name and event_name.upper() != 'HEARTBEAT':
                 priority = event.getHeader('Log-Level') or 'INFO'
                 body = event.getBody() or ''
@@ -460,7 +493,13 @@ class FreeSwitchLogCollector:
 
             if log_data:
                 domain = self.log_manager.extract_domain(event, log_data)
+                # Primary: write to domain-specific log
                 self.log_manager.write_log(domain, log_data)
+                # Also persist a full fs_cli-style stream for complete raw logs
+                try:
+                    self.log_manager.write_log('fs_cli', log_data)
+                except Exception:
+                    pass
         except Exception as e:
             logger.exception(f"Error processing event: {e}")
             self.metrics.record_error()
