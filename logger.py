@@ -132,11 +132,23 @@ class LogManager:
         Extract domain name from event headers - much more reliable than log parsing
         Uses domain_name variable (like Lua: session:getVariable("domain_name"))
         Falls back to other headers if domain_name is not available
+        
+        Also extracts file:line info from LOG events and prepends to output for full context
         """
         if not event:
             return 'unknown'
         
         try:
+            # Extract file:line info if available (from LOG events)
+            file_line_info = ""
+            try:
+                file_info = event.getHeader('File')
+                line_num = event.getHeader('Line')
+                if file_info and line_num:
+                    file_line_info = f"[{file_info}:{line_num}] "
+            except Exception:
+                pass
+            
             # Priority 0: Try domain_name variable (like Lua session:getVariable("domain_name"))
             # This is the most direct way to get the domain
             domain = event.getHeader('domain_name')
@@ -439,9 +451,14 @@ class FreeSwitchLogCollector:
                 logger.debug(f"Connection object type: {type(self.connection)}")
                 self.connection_attempts = 0  # Reset counter on success
                 
-                # Subscribe to all log events
+                # Subscribe to ALL events AND raw logs for complete capture
+                # Subscribe to all events first
                 self.connection.events("plain", "all")
-                logger.info("✓ Subscribed to all events")
+                logger.info("✓ Subscribed to all events (plain/all)")
+                
+                # Also enable raw logs to capture everything from fs_cli
+                self.connection.filter("Event-Name", "LOG")
+                logger.info("✓ Enabled LOG event filtering for raw logs")
                 
                 return True
             else:
@@ -459,7 +476,7 @@ class FreeSwitchLogCollector:
             return False
     
     def process_event(self, event):
-        """Process incoming ESL event"""
+        """Process incoming ESL event - capture ALL information"""
         try:
             # Attempt to deduplicate events if an identifier header is present
             event_id = None
@@ -476,18 +493,48 @@ class FreeSwitchLogCollector:
             
             event_name = event.getHeader("Event-Name")
             
+            # Skip heartbeat events - they're noise
+            if event_name == "HEARTBEAT":
+                return
+            
             # Get log data from various event types
             log_data = None
             
+            # Priority 1: Raw LOG events contain the actual fs_cli output
             if event_name == "LOG":
                 log_data = event.getBody()
+                # For LOG events, also capture the log level and file info
+                log_level = event.getHeader("Log-Level") or "INFO"
+                if log_data:
+                    # Preserve raw format but add context
+                    log_data = f"[{log_level}] {log_data}"
+                    
+            # Priority 2: CHANNEL_LOG events
             elif event_name == "CHANNEL_LOG":
                 log_data = event.getBody()
+                
+            # Priority 3: All other events (except HEARTBEAT)
             elif event_name and event_name != "HEARTBEAT":
-                # For other events, create a formatted log entry
+                # For other events, create a formatted log entry with full context
                 priority = event.getHeader("Log-Level") or "INFO"
                 body = event.getBody() or ""
-                log_data = f"[{event_name}] [{priority}] {body}"
+                
+                # Try to extract call information
+                uuid = event.getHeader('Unique-ID') or event.getHeader('Channel-Unique-ID') or ""
+                channel_name = event.getHeader('Channel-Name') or ""
+                caller_id_name = event.getHeader('Caller-ID-Name') or ""
+                caller_id_number = event.getHeader('Caller-ID-Number') or ""
+                
+                # Build rich log entry
+                if uuid or channel_name:
+                    call_info = f"({channel_name or uuid})"
+                else:
+                    call_info = ""
+                    
+                if caller_id_number:
+                    call_info += f" [{caller_id_name or caller_id_number}]"
+                
+                log_data = f"[{event_name}] [{priority}] {call_info} {body}".strip()
             
             if log_data:
                 # Extract domain from event headers + log line and write immediately
