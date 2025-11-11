@@ -12,19 +12,42 @@ from sys import version_info
 if version_info >= (2, 6, 0):
     def swig_import_helper():
         from os.path import dirname
-        import imp
-        fp = None
+        import importlib.util
+        import sys
+        
+        dirname_path = dirname(__file__)
+        so_path = None
+        
+        # Look for _ESL extension in the same directory
+        for ext in ['.so', '.pyd', '.dylib']:
+            candidate = dirname_path + '/../_ESL.cpython-312-x86_64-linux-gnu' + ext
+            if __import__('os').path.exists(candidate):
+                so_path = candidate
+                break
+        
+        # Try direct import first (preferred)
         try:
-            fp, pathname, description = imp.find_module('_ESL', [dirname(__file__)])
-        except ImportError:
             import _ESL
             return _ESL
-        if fp is not None:
+        except ImportError:
+            pass
+        
+        # If direct import fails, try to load the .so file
+        if so_path:
             try:
-                _mod = imp.load_module('_ESL', fp, pathname, description)
-            finally:
-                fp.close()
-            return _mod
+                spec = importlib.util.spec_from_file_location("_ESL", so_path)
+                if spec and spec.loader:
+                    _mod = importlib.util.module_from_spec(spec)
+                    sys.modules['_ESL'] = _mod
+                    spec.loader.exec_module(_mod)
+                    return _mod
+            except Exception:
+                pass
+        
+        # Last resort: try importing _ESL directly
+        import _ESL
+        return _ESL
+    
     _ESL = swig_import_helper()
     del swig_import_helper
 else:
