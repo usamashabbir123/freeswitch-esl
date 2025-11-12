@@ -147,19 +147,22 @@ class LogManager:
 
     def extract_domain(self, event, log_line):
         """
-        Improved domain extraction: prefer session/ESL headers (including variable_ prefixes),
-        then common SIP headers, then regex against the raw log line. Returns 'unknown' when
-        nothing reliable is found.
+        Strict domain extraction: 
+        1. Try explicit domain headers first (domain_name, Caller-Domain, Callee-Domain, etc.)
+        2. Extract from proper SIP URIs (sip:user@domain format)
+        3. Only if absolutely necessary, extract from Caller-ID-Number (user@domain)
+        4. Return 'unknown' if nothing reliable found
+        
+        IMPORTANT: Do NOT extract arbitrary IPs from log content - only from SIP URIs.
         """
         if not event:
             return 'unknown'
 
         try:
-            # Common header keys to try (include variable_ prefixed session variables)
+            # === PRIORITY 1: Explicit domain headers (most reliable) ===
             header_candidates = [
                 'domain_name', 'Caller-Domain', 'Callee-Domain', 'User-Domain', 'Domain',
-                'variable_domain_name', 'variable_domain', 'variable_user_domain',
-                'variable_sip_from', 'variable_sip_to', 'variable_domain'
+                'variable_domain_name', 'variable_domain', 'variable_user_domain'
             ]
 
             for header in header_candidates:
@@ -167,79 +170,86 @@ class LogManager:
                     val = event.getHeader(header)
                 except Exception:
                     val = None
+                
                 if not val or not isinstance(val, str):
                     continue
+                
                 v = val.strip()
                 if not v or v.lower() == 'default':
                     continue
 
-                # If value looks like a SIP URI, extract domain
-                if 'sip:' in v or '@' in v:
-                    sip_domain = self._extract_sip_domain(v) or (v.split('@', 1)[1].strip() if '@' in v else None)
-                    if sip_domain and self._is_valid_domain(sip_domain):
-                        # Sanitize before returning (lowercase, remove invalid filename chars)
-                        sip_domain = sip_domain.lower().strip()
-                        sip_domain = re.sub(r'[<>:"/\\|?*\s]', '', sip_domain)
-                        logger.debug(f"Domain from header {header}: {sip_domain}")
-                        return sip_domain or 'unknown'
-
-                # Plain domain value
+                # Validate and sanitize domain
                 if self._is_valid_domain(v):
                     v = v.lower().strip()
                     v = re.sub(r'[<>:"/\\|?*\s]', '', v)
-                    logger.debug(f"Domain from header {header}: {v}")
+                    logger.debug(f"Domain from explicit header '{header}': {v}")
                     return v or 'unknown'
 
-            # Try Caller-ID-Number (user@domain)
+            # === PRIORITY 2: Extract from Caller-ID-Number (user@domain) ===
             try:
                 caller_id = event.getHeader('Caller-ID-Number')
             except Exception:
                 caller_id = None
+            
             if caller_id and isinstance(caller_id, str) and '@' in caller_id:
-                domain = caller_id.split('@', 1)[1].strip()
-                if self._is_valid_domain(domain):
-                    domain = domain.lower()
-                    domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
-                    logger.debug(f"Domain from Caller-ID-Number: {domain}")
-                    return domain or 'unknown'
+                parts = caller_id.split('@', 1)
+                if len(parts) == 2:
+                    domain = parts[1].strip()
+                    if self._is_valid_domain(domain):
+                        domain = domain.lower()
+                        domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
+                        logger.debug(f"Domain from Caller-ID-Number: {domain}")
+                        return domain or 'unknown'
 
-            # Try From/To/Channel-Name headers
-            for hdr in ('From', 'To', 'Channel-Name'):
+            # === PRIORITY 3: Extract from SIP headers (From, To, Contact) ===
+            for hdr in ('From', 'To', 'Contact', 'P-Asserted-Identity'):
                 try:
                     h = event.getHeader(hdr)
                 except Exception:
                     h = None
-                if not h:
+                
+                if not h or not isinstance(h, str):
                     continue
-                dm = self._extract_sip_domain(h) or (str(h).split('@', 1)[1].strip() if '@' in str(h) else None)
+                
+                # Only extract domain from proper SIP URIs
+                dm = self._extract_sip_domain(h)
                 if dm and self._is_valid_domain(dm):
                     dm = dm.lower()
                     dm = re.sub(r'[<>:"/\\|?*\s]', '', dm)
-                    logger.debug(f"Domain from {hdr}: {dm}")
+                    logger.debug(f"Domain from SIP header '{hdr}': {dm}")
                     return dm or 'unknown'
 
-            # Final fallback: regexes against raw log line to catch fs_cli outputs
-            if log_line and isinstance(log_line, str):
-                patterns = [
-                    r'sip:[^@>]+@([\w.-]+)',
-                    r'sofia/[\w-]+/(?:[\w%+\-]+@)?([\w.-]+)',
-                    r'@([\w.-]+)',
-                    r'\[([\w.-]+\.[a-zA-Z]{2,})\]'
-                ]
-                for p in patterns:
-                    try:
-                        m = re.search(p, log_line)
-                        if m:
-                            d = m.group(1)
-                            if d and self._is_valid_domain(d):
-                                d = d.lower()
-                                d = re.sub(r'[<>:"/\\|?*\s]', '', d)
-                                logger.debug(f"Domain from log regex ({p}): {d}")
-                                return d or 'unknown'
-                    except Exception:
-                        continue
+            # === PRIORITY 4: Try Channel-Name (usually user@domain format) ===
+            try:
+                channel = event.getHeader('Channel-Name')
+            except Exception:
+                channel = None
+            
+            if channel and isinstance(channel, str) and '@' in channel:
+                parts = channel.split('@', 1)
+                if len(parts) == 2:
+                    domain = parts[1].strip()
+                    if self._is_valid_domain(domain):
+                        domain = domain.lower()
+                        domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
+                        logger.debug(f"Domain from Channel-Name: {domain}")
+                        return domain or 'unknown'
 
-            logger.debug("No domain found in headers or log; using 'unknown'")
+            # === LAST RESORT: Only extract from well-formed SIP URIs in log line ===
+            # DO NOT extract random IPs - only from explicit SIP URIs
+            if log_line and isinstance(log_line, str):
+                # Only match proper SIP URIs: sip:user@domain or sips:user@domain
+                sip_uri_pattern = r'sips?:[^@\s>]+@([\w.-]+)'
+                m = re.search(sip_uri_pattern, log_line)
+                if m:
+                    d = m.group(1)
+                    if d and self._is_valid_domain(d):
+                        d = d.lower()
+                        d = re.sub(r'[<>:"/\\|?*\s]', '', d)
+                        logger.debug(f"Domain from SIP URI in log: {d}")
+                        return d or 'unknown'
+
+            logger.debug("No reliable domain found in headers or SIP URIs; using 'unknown'")
             return 'unknown'
 
         except Exception as e:
