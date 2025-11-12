@@ -269,6 +269,9 @@ class LogManager:
         """Write log line to appropriate domain file - immediate write"""
         try:
             with self.lock:
+                # Normalize domain to lowercase to avoid duplicate files for same domain
+                domain = str(domain).lower().strip() if domain else 'unknown'
+                
                 # use timezone-aware UTC timestamps (avoid deprecated utcnow())
                 timestamp = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                 # ensure single newline at end
@@ -299,6 +302,8 @@ class LogManager:
             self.metrics.record_error()
 
     def _write_to_file(self, domain, content):
+        # Normalize domain to lowercase (safety measure for duplicate file prevention)
+        domain = str(domain).lower().strip() if domain else 'unknown'
         log_file = self.log_dir / f"{domain}.log"
         try:
             # Rotate if needed
