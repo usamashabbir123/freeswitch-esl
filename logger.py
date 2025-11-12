@@ -159,10 +159,29 @@ class LogManager:
             return 'unknown'
 
         try:
-            # === PRIORITY 1: Explicit domain headers (most reliable) ===
+            # === PRIORITY 1: Use ONLY variable_domain_name (most reliable from FreeSWITCH) ===
+            try:
+                domain = event.getHeader('variable_domain_name')
+            except Exception:
+                domain = None
+            
+            if domain and isinstance(domain, str):
+                v = domain.strip()
+                if v and v.lower() != 'default':
+                    # Debug: log the extracted value
+                    logger.debug(f"Header 'variable_domain_name' = '{v}'")
+                    
+                    # Validate and sanitize domain
+                    if self._is_valid_domain(v):
+                        v = v.lower().strip()
+                        v = re.sub(r'[<>:"/\\|?*\s]', '', v)
+                        logger.debug(f"Domain from variable_domain_name: {v}")
+                        return v or 'unknown'
+
+            # === FALLBACK: Try other domain headers if variable_domain_name not available ===
             header_candidates = [
-                'domain_name', 'Caller-Domain', 'Callee-Domain', 'User-Domain', 'Domain',
-                'variable_domain_name', 'variable_domain', 'variable_user_domain'
+                'Caller-Domain', 'Callee-Domain', 'User-Domain', 'Domain',
+                'domain_name', 'variable_domain', 'variable_user_domain'
             ]
 
             for header in header_candidates:
@@ -179,16 +198,16 @@ class LogManager:
                     continue
 
                 # Debug: log all extracted values
-                logger.debug(f"Header '{header}' = '{v}'")
+                logger.debug(f"Fallback header '{header}' = '{v}'")
 
                 # Validate and sanitize domain
                 if self._is_valid_domain(v):
                     v = v.lower().strip()
                     v = re.sub(r'[<>:"/\\|?*\s]', '', v)
-                    logger.debug(f"Domain from explicit header '{header}': {v}")
+                    logger.debug(f"Domain from fallback header '{header}': {v}")
                     return v or 'unknown'
 
-            # === PRIORITY 2: Extract from Caller-ID-Number (user@domain) ===
+            # === FINAL FALLBACK: Extract from Caller-ID-Number (user@domain) ===
             try:
                 caller_id = event.getHeader('Caller-ID-Number')
             except Exception:
@@ -204,39 +223,7 @@ class LogManager:
                         logger.debug(f"Domain from Caller-ID-Number: {domain}")
                         return domain or 'unknown'
 
-            # === PRIORITY 3: Extract from SIP headers (From, To, Contact) ===
-            for hdr in ('From', 'To', 'Contact', 'P-Asserted-Identity'):
-                try:
-                    h = event.getHeader(hdr)
-                except Exception:
-                    h = None
-                
-                if not h or not isinstance(h, str):
-                    continue
-                
-                # Only extract domain from proper SIP URIs
-                dm = self._extract_sip_domain(h)
-                if dm and self._is_valid_domain(dm):
-                    dm = dm.lower()
-                    dm = re.sub(r'[<>:"/\\|?*\s]', '', dm)
-                    logger.debug(f"Domain from SIP header '{hdr}': {dm}")
-                    return dm or 'unknown'
-
-            # === PRIORITY 4: Last resort for SIP URIs in log content ===
-            # (Skip Channel-Name extraction as it contains endpoints like sofia/internal/user@ip:port)
-            if log_line and isinstance(log_line, str):
-                # Only match proper SIP URIs: sip:user@domain or sips:user@domain
-                sip_uri_pattern = r'sips?:[^@\s>]+@([\w.-]+)'
-                m = re.search(sip_uri_pattern, log_line)
-                if m:
-                    d = m.group(1)
-                    if d and self._is_valid_domain(d):
-                        d = d.lower()
-                        d = re.sub(r'[<>:"/\\|?*\s]', '', d)
-                        logger.debug(f"Domain from SIP URI in log: {d}")
-                        return d or 'unknown'
-
-            logger.debug("No reliable domain found in headers or SIP URIs; using 'unknown'")
+            logger.debug("No reliable domain found; using 'unknown'")
             return 'unknown'
 
         except Exception as e:
@@ -602,19 +589,8 @@ class FreeSwitchLogCollector:
             if log_data:
                 domain = self.log_manager.extract_domain(event, log_data)
                 
-                # Primary: write to domain-specific log
+                # Primary: write to domain-specific log (organized by domain only)
                 self.log_manager.write_log(domain, log_data)
-                
-                # ALSO: Extract UUID and write to call-tracking file for complete call history
-                try:
-                    uuid = event.getHeader('Unique-ID') or event.getHeader('Event-UUID') or ''
-                    if uuid:
-                        # Create a call-tracking file named by UUID so all events for a call are together
-                        # Use format: call_<uuid>.log to distinguish from domain logs
-                        call_file = f"call_{uuid}"
-                        self.log_manager.write_log(call_file, log_data)
-                except Exception:
-                    pass
                 
                 # Always persist a full fs_cli-style stream for complete raw logs
                 try:
