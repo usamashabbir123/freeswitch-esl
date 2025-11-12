@@ -219,24 +219,8 @@ class LogManager:
                     logger.debug(f"Domain from SIP header '{hdr}': {dm}")
                     return dm or 'unknown'
 
-            # === PRIORITY 4: Try Channel-Name (usually user@domain format) ===
-            try:
-                channel = event.getHeader('Channel-Name')
-            except Exception:
-                channel = None
-            
-            if channel and isinstance(channel, str) and '@' in channel:
-                parts = channel.split('@', 1)
-                if len(parts) == 2:
-                    domain = parts[1].strip()
-                    if self._is_valid_domain(domain):
-                        domain = domain.lower()
-                        domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
-                        logger.debug(f"Domain from Channel-Name: {domain}")
-                        return domain or 'unknown'
-
-            # === LAST RESORT: Only extract from well-formed SIP URIs in log line ===
-            # DO NOT extract random IPs - only from explicit SIP URIs
+            # === PRIORITY 4: Last resort for SIP URIs in log content ===
+            # (Skip Channel-Name extraction as it contains endpoints like sofia/internal/user@ip:port)
             if log_line and isinstance(log_line, str):
                 # Only match proper SIP URIs: sip:user@domain or sips:user@domain
                 sip_uri_pattern = r'sips?:[^@\s>]+@([\w.-]+)'
