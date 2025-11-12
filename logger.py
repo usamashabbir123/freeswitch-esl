@@ -177,13 +177,18 @@ class LogManager:
                 if 'sip:' in v or '@' in v:
                     sip_domain = self._extract_sip_domain(v) or (v.split('@', 1)[1].strip() if '@' in v else None)
                     if sip_domain and self._is_valid_domain(sip_domain):
+                        # Sanitize before returning (lowercase, remove invalid filename chars)
+                        sip_domain = sip_domain.lower().strip()
+                        sip_domain = re.sub(r'[<>:"/\\|?*\s]', '', sip_domain)
                         logger.debug(f"Domain from header {header}: {sip_domain}")
-                        return sip_domain.lower()
+                        return sip_domain or 'unknown'
 
                 # Plain domain value
                 if self._is_valid_domain(v):
+                    v = v.lower().strip()
+                    v = re.sub(r'[<>:"/\\|?*\s]', '', v)
                     logger.debug(f"Domain from header {header}: {v}")
-                    return v.lower()
+                    return v or 'unknown'
 
             # Try Caller-ID-Number (user@domain)
             try:
@@ -193,8 +198,10 @@ class LogManager:
             if caller_id and isinstance(caller_id, str) and '@' in caller_id:
                 domain = caller_id.split('@', 1)[1].strip()
                 if self._is_valid_domain(domain):
+                    domain = domain.lower()
+                    domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
                     logger.debug(f"Domain from Caller-ID-Number: {domain}")
-                    return domain.lower()
+                    return domain or 'unknown'
 
             # Try From/To/Channel-Name headers
             for hdr in ('From', 'To', 'Channel-Name'):
@@ -206,8 +213,10 @@ class LogManager:
                     continue
                 dm = self._extract_sip_domain(h) or (str(h).split('@', 1)[1].strip() if '@' in str(h) else None)
                 if dm and self._is_valid_domain(dm):
+                    dm = dm.lower()
+                    dm = re.sub(r'[<>:"/\\|?*\s]', '', dm)
                     logger.debug(f"Domain from {hdr}: {dm}")
-                    return dm.lower()
+                    return dm or 'unknown'
 
             # Final fallback: regexes against raw log line to catch fs_cli outputs
             if log_line and isinstance(log_line, str):
@@ -223,8 +232,10 @@ class LogManager:
                         if m:
                             d = m.group(1)
                             if d and self._is_valid_domain(d):
+                                d = d.lower()
+                                d = re.sub(r'[<>:"/\\|?*\s]', '', d)
                                 logger.debug(f"Domain from log regex ({p}): {d}")
-                                return d.lower()
+                                return d or 'unknown'
                     except Exception:
                         continue
 
@@ -269,8 +280,12 @@ class LogManager:
         """Write log line to appropriate domain file - immediate write"""
         try:
             with self.lock:
-                # Normalize domain to lowercase to avoid duplicate files for same domain
+                # Normalize domain: lowercase, strip, sanitize for filename
                 domain = str(domain).lower().strip() if domain else 'unknown'
+                # Remove only truly invalid filename characters: < > : " / \ | ? *
+                # Keep dots, hyphens, underscores (valid in filenames and domain/IP names)
+                domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
+                domain = domain or 'unknown'
                 
                 # use timezone-aware UTC timestamps (avoid deprecated utcnow())
                 timestamp = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -302,8 +317,13 @@ class LogManager:
             self.metrics.record_error()
 
     def _write_to_file(self, domain, content):
-        # Normalize domain to lowercase (safety measure for duplicate file prevention)
+        # Normalize domain: lowercase, strip, sanitize for filename
         domain = str(domain).lower().strip() if domain else 'unknown'
+        # Remove only truly invalid filename characters: < > : " / \ | ? *
+        # Keep dots, hyphens, underscores (valid in filenames and domain/IP names)
+        domain = re.sub(r'[<>:"/\\|?*\s]', '', domain)
+        domain = domain or 'unknown'
+        
         log_file = self.log_dir / f"{domain}.log"
         try:
             # Rotate if needed
