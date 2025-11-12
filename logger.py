@@ -576,7 +576,9 @@ class FreeSwitchLogCollector:
                 headers_of_interest = [
                     'Unique-ID', 'Channel-Name', 'Caller-ID-Number', 'Caller-ID-Name',
                     'Destination-Number', 'Caller-Domain', 'Callee-Domain', 'Channel-State',
-                    'Call-Direction', 'Application', 'Application-Data'
+                    'Call-Direction', 'Application', 'Application-Data',
+                    'Presence-ID', 'Sofia-User-Agent', 'Signaling-IP', 'Signaling-Port',
+                    'Media-IP', 'Media-Port', 'Session-ID'
                 ]
                 header_parts = []
                 for h in headers_of_interest:
@@ -599,9 +601,22 @@ class FreeSwitchLogCollector:
 
             if log_data:
                 domain = self.log_manager.extract_domain(event, log_data)
+                
                 # Primary: write to domain-specific log
                 self.log_manager.write_log(domain, log_data)
-                # Also persist a full fs_cli-style stream for complete raw logs
+                
+                # ALSO: Extract UUID and write to call-tracking file for complete call history
+                try:
+                    uuid = event.getHeader('Unique-ID') or event.getHeader('Event-UUID') or ''
+                    if uuid:
+                        # Create a call-tracking file named by UUID so all events for a call are together
+                        # Use format: call_<uuid>.log to distinguish from domain logs
+                        call_file = f"call_{uuid}"
+                        self.log_manager.write_log(call_file, log_data)
+                except Exception:
+                    pass
+                
+                # Always persist a full fs_cli-style stream for complete raw logs
                 try:
                     self.log_manager.write_log('fs_cli', log_data)
                 except Exception:
