@@ -178,6 +178,9 @@ class LogManager:
                 if not v or v.lower() == 'default':
                     continue
 
+                # Debug: log all extracted values
+                logger.debug(f"Header '{header}' = '{v}'")
+
                 # Validate and sanitize domain
                 if self._is_valid_domain(v):
                     v = v.lower().strip()
@@ -334,7 +337,21 @@ class LogManager:
                 self._close_oldest_file()
 
             # Open file if necessary
-            if domain not in self.file_handles or self.file_handles[domain].closed:
+            # IMPORTANT: Check if file handle exists AND the underlying file still exists
+            # If file was deleted on host but handle is still cached, close and reopen
+            needs_open = domain not in self.file_handles
+            if not needs_open:
+                handle = self.file_handles[domain]
+                # If handle is closed or file no longer exists on disk, mark for re-opening
+                if handle.closed or not log_file.exists():
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+                    del self.file_handles[domain]
+                    needs_open = True
+
+            if needs_open:
                 # Ensure parent exists
                 try:
                     self.log_dir.mkdir(parents=True, exist_ok=True)
